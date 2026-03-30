@@ -60,6 +60,8 @@ Every 10 minutes it wakes from deep sleep, measures temperature & humidity (SHT3
 | GPIO23 (SCL) | SCL |
 | 3.3V | VCC |
 | GND | GND |
+| BAT+ | VIN- |
+| BAT- | GND |
 
 ### INA226 → Bateria LiPo / LiPo battery
 
