@@ -20,7 +20,7 @@ Every 10 minutes it wakes from deep sleep, measures temperature & humidity (SHT3
 
 ## Zdjęcie / Photo
 
-![PCB](hardware/PCB.jpg)
+![PCB](PCB.jpg)
 
 *XIAO ESP32C6 (góra / top) + INA226 (lewy dół / bottom left) + SHT3x (prawy dół / bottom right)*
 
@@ -156,9 +156,9 @@ Should also work with other Zigbee coordinators, but these have not been tested.
 
 | Hub / Coordinator | Status |
 |---|---|
-| **Samsung SmartThings** | ✅ Docelowy / Target platform |
-| Home Assistant + ZHA | ⚠️ Nie testowano / Not tested |
-| Zigbee2MQTT | ⚠️ Nie testowano / Not tested |
+| **Samsung SmartThings** |  Docelowy / Target platform |
+| Home Assistant + ZHA |  Nie testowano / Not tested |
+| Zigbee2MQTT |  Nie testowano / Not tested |
 
 ---
 
