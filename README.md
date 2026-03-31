@@ -22,9 +22,9 @@ Every 10 minutes it wakes from deep sleep, measures temperature & humidity (SHT3
 
 ![PCB](PCB.jpg)
 
-![PCB](Schemat.jpg)
-
 *XIAO ESP32C6 (góra / top) + INA226 (lewy dół / bottom left) + SHT3x (prawy dół / bottom right)*
+
+![PCB](Schemat.jpg)
 
 ---
 
