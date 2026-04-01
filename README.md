@@ -1,5 +1,7 @@
 # Zigbee Czujnik Temperatury i Wilgotności z Deep Sleep
 
+[Polski](#polski) | [English](#english)
+
 **Wersja:** 1.0 &nbsp;|&nbsp; **Autor:** Maciej Sikorski &nbsp;|&nbsp; **Data:** 30.03.2026 &nbsp;|&nbsp; **Licencja:** Apache 2.0
 
 ---
@@ -23,12 +25,12 @@ Co 10 minut budzi się z deep sleep, mierzy temperaturę i wilgotność (SHT3x) 
 
 ## Cechy
 
-- ⚡ **Efektywny energetycznie:** Deep sleep 10 minut, ~5–6 lat na baterii LiPo 2000 mAh
-- 🔒 **Niezawodny:** Retry logic dla czujników, RTC fallback, thread-safe
-- 🔋 **Monitorowanie baterii:** Napięcie + procent rozładowania
-- 🌡️ **Dokładne pomiary:** SHT3x (±0.3°C, ±2% RH), timeout + walidacja zakresu
-- 🔄 **Factory Reset:** Przycisk BOOT (> 3 s) resetuje Zigbee binding
-- 📡 **Integracja SmartThings:** Zaprojektowany z myślą o Samsung SmartThings
+-  **Efektywny energetycznie:** Deep sleep 10 minut, ~5–6 lat na baterii LiPo 2000 mAh
+-  **Niezawodny:** Retry logic dla czujników, RTC fallback, thread-safe
+-  **Monitorowanie baterii:** Napięcie + procent rozładowania
+-  **Dokładne pomiary:** SHT3x (±0.3°C, ±2% RH), timeout + walidacja zakresu
+-  **Factory Reset:** Przycisk BOOT (> 3 s) resetuje Zigbee binding
+-  **Integracja SmartThings:** Zaprojektowany z myślą o Samsung SmartThings
 
 ---
 
@@ -54,7 +56,7 @@ Co 10 minut budzi się z deep sleep, mierzy temperaturę i wilgotność (SHT3x) 
 | 5 | Kondensator ceramiczny | 100 nF (dla SHT3x, INA226) | 2 | AliExpress |
 | 6 | Rezystor pull-up | 10 kΩ (opcjonalnie) | 2 | AliExpress |
 
-> 💰 Całkowity koszt (~2026): **~25–40 PLN** (bez baterii)
+>  Całkowity koszt (~2026): **~25–40 PLN** (bez baterii)
 
 ---
 
@@ -133,7 +135,7 @@ Co 10 minut budzi się z deep sleep, mierzy temperaturę i wilgotność (SHT3x) 
 
 ### Krok 3: Wgrywanie
 
-1. `Tools → Zigbee mode → Zigbee ED (end device)` ⚠️ **WYMAGANE**
+1. `Tools → Zigbee mode → Zigbee ED (end device)`  **WYMAGANE**
 2. `Tools → Partition Scheme → Zigbee 4MB with spiffs`
 3. `Sketch → Upload`
 4. Po wgraniu przytrzymaj BOOT > 3 s → Factory Reset
@@ -213,11 +215,11 @@ Po sparowaniu czujnik pojawia się jako urządzenie **Temperature and Humidity**
 | Bateria | 0% … 100% | zakres 3.0–4.2 V |
 
 Po sparowaniu czujnik będzie:
-- ✅ Wysyłać dane co 10 minut
-- ✅ Wysyłać alert jeśli bateria < 10%
-- ✅ Pokazywać status "Connected" / "Offline"
+-  Wysyłać dane co 10 minut
+-  Wysyłać alert jeśli bateria < 10%
+-  Pokazywać status "Connected" / "Offline"
 
-> ℹ️ SmartThings uznaje urządzenie za offline jeśli nie komunikuje się przez > 1 godzinę.  
+>  SmartThings uznaje urządzenie za offline jeśli nie komunikuje się przez > 1 godzinę.  
 > To zachowanie jest normalne dla czujnika z deep sleep.
 
 ---
@@ -226,9 +228,9 @@ Po sparowaniu czujnik będzie:
 
 | Hub / Coordinator | Status |
 |---|---|
-| **Samsung SmartThings** | ✅ Docelowy |
-| Home Assistant + ZHA | ⚠️ Nie testowano |
-| Zigbee2MQTT | ⚠️ Nie testowano |
+| **Samsung SmartThings** |  Docelowy |
+| Home Assistant + ZHA |  Nie testowano |
+| Zigbee2MQTT |  Nie testowano |
 
 ---
 
@@ -236,7 +238,7 @@ Po sparowaniu czujnik będzie:
 
 ### Czujnik nie pojawia się w SmartThings
 
-- Czy wybrano `Tools → Zigbee mode → Zigbee ED`? ⚠️ WYMAGANE
+- Czy wybrano `Tools → Zigbee mode → Zigbee ED`?  WYMAGANE
 - Czy Hub SmartThings jest w trybie parowania?
 - Czy bateria ma co najmniej 3.5 V?
 - Czekaj do 2 minut — pierwsze budzenie może być wolne
@@ -323,12 +325,12 @@ Every 10 minutes it wakes from deep sleep, measures temperature & humidity (SHT3
 
 ## Features
 
-- ⚡ **Power efficient:** Deep sleep 10 minutes, ~5–6 years on a 2000 mAh LiPo battery
-- 🔒 **Reliable:** Retry logic for sensors, RTC fallback, thread-safe
-- 🔋 **Battery monitoring:** Voltage + discharge percentage
-- 🌡️ **Accurate measurements:** SHT3x (±0.3°C, ±2% RH), timeout + range validation
-- 🔄 **Factory Reset:** BOOT button (> 3 s) resets Zigbee binding
-- 📡 **SmartThings integration:** Designed for Samsung SmartThings
+-  **Power efficient:** Deep sleep 10 minutes, ~5–6 years on a 2000 mAh LiPo battery
+-  **Reliable:** Retry logic for sensors, RTC fallback, thread-safe
+-  **Battery monitoring:** Voltage + discharge percentage
+-  **Accurate measurements:** SHT3x (±0.3°C, ±2% RH), timeout + range validation
+-  **Factory Reset:** BOOT button (> 3 s) resets Zigbee binding
+-  **SmartThings integration:** Designed for Samsung SmartThings
 
 ---
 
@@ -354,7 +356,7 @@ Every 10 minutes it wakes from deep sleep, measures temperature & humidity (SHT3
 | 5 | Ceramic capacitor | 100 nF (for SHT3x, INA226) | 2 | AliExpress |
 | 6 | Pull-up resistor | 10 kΩ (optional) | 2 | AliExpress |
 
-> 💰 Total cost (~2026): **~25–40 PLN** (without battery)
+>  Total cost (~2026): **~25–40 PLN** (without battery)
 
 ---
 
@@ -433,7 +435,7 @@ Every 10 minutes it wakes from deep sleep, measures temperature & humidity (SHT3
 
 ### Step 3: Upload
 
-1. `Tools → Zigbee mode → Zigbee ED (end device)` ⚠️ **REQUIRED**
+1. `Tools → Zigbee mode → Zigbee ED (end device)`  **REQUIRED**
 2. `Tools → Partition Scheme → Zigbee 4MB with spiffs`
 3. `Sketch → Upload`
 4. After upload hold BOOT > 3 s → Factory Reset
@@ -513,11 +515,11 @@ After pairing, the sensor appears as a **Temperature and Humidity** device with 
 | Battery | 0% … 100% | range 3.0–4.2 V |
 
 After pairing the sensor will:
-- ✅ Send data every 10 minutes
-- ✅ Send alert if battery < 10%
-- ✅ Show "Connected" / "Offline" status
+-  Send data every 10 minutes
+-  Send alert if battery < 10%
+-  Show "Connected" / "Offline" status
 
-> ℹ️ SmartThings marks the device as offline if it doesn't communicate for > 1 hour.  
+>  SmartThings marks the device as offline if it doesn't communicate for > 1 hour.  
 > This is expected behavior for a deep sleep sensor.
 
 ---
@@ -526,9 +528,9 @@ After pairing the sensor will:
 
 | Hub / Coordinator | Status |
 |---|---|
-| **Samsung SmartThings** | ✅ Target platform |
-| Home Assistant + ZHA | ⚠️ Not tested |
-| Zigbee2MQTT | ⚠️ Not tested |
+| **Samsung SmartThings** |  Target platform |
+| Home Assistant + ZHA |  Not tested |
+| Zigbee2MQTT |  Not tested |
 
 ---
 
@@ -536,7 +538,7 @@ After pairing the sensor will:
 
 ### Sensor not appearing in SmartThings
 
-- Did you select `Tools → Zigbee mode → Zigbee ED`? ⚠️ REQUIRED
+- Did you select `Tools → Zigbee mode → Zigbee ED`?  REQUIRED
 - Is the SmartThings Hub in pairing mode?
 - Does the battery have at least 3.5 V?
 - Wait up to 2 minutes — first boot may be slow
