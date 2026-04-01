@@ -290,22 +290,6 @@ Sprawdź wyjście Serial Monitor / Check Serial Monitor output:
 
 ---
 
-## Struktura repozytorium / Repository structure
-
-```
-├── README.md
-├── LICENSE
-├── .gitignore
-├── Zigbee_Temp_Hum_Sensor_Sleepy.ino
-└── images/
-    ├── PCB.jpg
-    ├── Schemat.jpg
-    ├── SHT3x_pinout.jpg
-    ├── ina226_pinout.jpg
-    └── xiao_esp32c6_pinout.jpg
-
----
-
 ## Licencja / License
 
 Ten projekt oparty jest na przykładzie Espressif Systems objętym licencją Apache 2.0.  
