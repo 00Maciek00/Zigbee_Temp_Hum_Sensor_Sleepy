@@ -65,7 +65,7 @@
 //  DEBUG_ENABLED 1 → wszystkie logi (development)
 //  DEBUG_ENABLED 0 → tylko WARN i ERROR (production, zero overhead)
 // =============================================================================
-#define DEBUG_ENABLED 1
+#define DEBUG_ENABLED 0
 
 #if DEBUG_ENABLED
   #define LOG_DEBUG(fmt, ...)  Serial.printf("[DEBUG] " fmt "\r\n", ##__VA_ARGS__)
@@ -456,6 +456,7 @@ static void measureAndSleep(void *arg) {
   zbTempSensor.setTemperature(temperature);
   zbTempSensor.setHumidity(humidity);
   zbTempSensor.setBatteryPercentage(batteryPercent);
+  zbTempSensor.reportBatteryPercentage(); 
 
   LOG_INFO("Raport Zigbee / Zigbee report: %.2f°C, %.2f%%, batt: %u%% (%.2fV)",
                 temperature, humidity, batteryPercent, batteryVoltage);
@@ -563,7 +564,7 @@ void setup() {
   zbTempSensor.setManufacturerAndModel("Espressif", "SleepyZigbeeTempSensor");
   zbTempSensor.setMinMaxValue(SHT3X_TEMP_MIN, SHT3X_TEMP_MAX);
   zbTempSensor.setTolerance(0.3f);                        // ← przywrócone
-  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, 100, 35); // ← trzeci argument (napięcie nominalne baterii)
+  zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, 100); // ← trzeci argument (napięcie nominalne baterii)
   zbTempSensor.addHumiditySensor(SHT3X_HUM_MIN, SHT3X_HUM_MAX, 1);
 
   Zigbee.onGlobalDefaultResponse(onGlobalResponse);
