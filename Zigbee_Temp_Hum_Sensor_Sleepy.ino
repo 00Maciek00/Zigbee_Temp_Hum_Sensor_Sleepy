@@ -1,3 +1,4 @@
+
 // =============================================================================
 //  Zigbee Czujnik Temperatury i Wilgotności z Deep Sleep
 //  Zigbee Temperature & Humidity Sensor with Deep Sleep
@@ -13,7 +14,19 @@
 //    - SHT3x  — temperatura i wilgotność / temperature and humidity
 //    - INA226 — napięcie i prąd baterii LiPo / LiPo battery voltage and current
 //
-//  Zmiany v2.3 / Changes v2.3:
+//  Zmiany v2.4 / Changes v2.4:
+//    - Factory reset przez GPIO wakeup zamiast pollingu w loop()
+//    - esp_deep_sleep_enable_gpio_wakeup() na GPIO0 (nowy przycisk)
+//    - Flaga RTC_DATA_ATTR factoryResetRequested — przeżywa deep sleep
+//    - Reset wykonywany po Zigbee.begin(), nie przed — stos Zigbee gotowy
+//    - Usunięto checkFactoryReset() — przycisk działa teraz również podczas snu
+//
+//    - Factory reset via GPIO wakeup instead of loop() polling
+//    - esp_deep_sleep_enable_gpio_wakeup() on GPIO0 (new button)
+//    - RTC_DATA_ATTR factoryResetRequested flag — survives deep sleep
+//    - Reset executed after Zigbee.begin(), not before — Zigbee stack ready
+//    - Removed checkFactoryReset() — button now works during deep sleep too
+//
 //    - INA226 fallback: ostatnia dobra wartość z RTC zamiast 0.0V
 //    - Zakres sanity check INA226 (0.5–5.5V) opatrzony komentarzem (1S LiPo, celowe)
 //    - delay(10) po Serial.flush() przed deep sleep — gwarancja opróżnienia UART
@@ -94,7 +107,7 @@
 //  DEBUG_ENABLED 1 → wszystkie logi (development)
 //  DEBUG_ENABLED 0 → tylko WARN i ERROR (production, zero overhead)
 // =============================================================================
-#define DEBUG_ENABLED 1
+#define DEBUG_ENABLED 0
 
 #if DEBUG_ENABLED
   #define LOG_DEBUG(fmt, ...)  Serial.printf("[DEBUG] " fmt "\r\n", ##__VA_ARGS__)
@@ -119,7 +132,7 @@
 // -----------------------------------------------------------------------------
 #define TEMP_SENSOR_ENDPOINT_NUMBER  10
 #define LED_PIN                      15
-#define BOOT_PIN_NUM                 BOOT_PIN
+#define BOOT_PIN_NUM                 0
 #define uS_TO_S_FACTOR               1000000ULL
 #define TIME_TO_SLEEP                600    // s (10 minut / 10 minutes)
 #define REPORT_TIMEOUT               6000   // maks. czas na ACK / max wait for ACK [ms]
@@ -154,6 +167,10 @@
 #define ZIGBEE_BEGIN_TIMEOUT_MS    20000
 #define ZIGBEE_CONNECT_TIMEOUT_MS  300000  // maks. czas oczekiwania na sieć / max wait for network [ms] (5 min)
 #define ZIGBEE_REPORT_COUNT        3       // liczba atrybutów do potwierdzenia / number of attributes to ACK
+
+// Flaga w pamięci RTC — przeżywa deep sleep, kasuje się przy twardym resecie
+// Flag in RTC memory — survives deep sleep, cleared on hard reset
+RTC_DATA_ATTR static bool factoryResetRequested = false;
 
 // =============================================================================
 //  Struktura stanu urządzenia (zastępuje luźne zmienne globalne)
@@ -509,33 +526,6 @@ static void measureAndSleep(void *arg) {
 }
 
 // =============================================================================
-//  Sprawdzenie przycisku BOOT — długie naciśnięcie (>3s) = factory reset
-//  BOOT button check — long press (>3s) = factory reset
-// =============================================================================
-void checkFactoryReset() {
-  if (digitalRead(button) == LOW) {
-    delay(100);
-    unsigned long startTime = millis();
-    while (digitalRead(button) == LOW) {
-      bool blink = ((millis() - startTime) / 200) % 2;
-      digitalWrite(LED_PIN, blink ? HIGH : LOW);
-      delay(50);
-
-      if ((millis() - startTime) > 3000) {
-        LOG_WARN("Factory reset! Czyszczę dane i restartuję... / Clearing data and restarting...");
-        digitalWrite(LED_PIN, LOW);
-        delay(200);
-        Zigbee.factoryReset();
-        esp_restart();
-      }
-    }
-    dev.ledState      = false;
-    dev.lastLedToggle = millis();
-    digitalWrite(LED_PIN, LOW);
-  }
-}
-
-// =============================================================================
 //  Nieblokująca obsługa diody LED
 //  Non-blocking LED control
 // =============================================================================
@@ -596,6 +586,10 @@ void setup() {
   // Timer deep sleep
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
 
+  // Wybudzenie przez przycisk (GPIO0) — działa również podczas deep sleep
+  // Button wakeup (GPIO0) — works even during deep sleep
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << BOOT_PIN_NUM, ESP_GPIO_WAKEUP_GPIO_LOW);
+
   // Konfiguracja endpointu Zigbee
   // Zigbee endpoint configuration
   zbTempSensor.setManufacturerAndModel("Espressif", "SleepyZigbeeSensor");
@@ -615,6 +609,14 @@ void setup() {
   // Odliczanie przed startem tylko przy pierwszym uruchomieniu (nie po deep sleep)
   // Countdown only on first boot, skip after deep sleep wake-up
   esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+
+  // Wybudzenie przyciskiem — ustaw flagę w RTC (przeżyje restart po Zigbee.begin)
+  // Button wakeup — set RTC flag (survives restart after Zigbee.begin)
+  if (wakeupCause == ESP_SLEEP_WAKEUP_GPIO) {
+    factoryResetRequested = true;
+    LOG_WARN("Wybudzenie przez przycisk GPIO0 — factory reset zlecony / Button GPIO0 wakeup — factory reset requested.");
+  }
+
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED) {
     LOG_INFO("\n>>> START SYSTEMU / SYSTEM START: Oczekiwanie 5 s przed Zigbee...");
     for (int i = 5; i > 0; i--) {
@@ -654,6 +656,19 @@ void setup() {
   zigbeeFailCount = 0;
   dev.zigbeeConnectStart = millis();
   LOG_INFO("Zigbee OK. Czekam na sieć... / Waiting for network...");
+
+  // Factory reset zlecony przez przycisk podczas deep sleep
+  // Factory reset requested by button press during deep sleep
+  if (factoryResetRequested) {
+    factoryResetRequested = false;
+    LOG_WARN(">>> FACTORY RESET: Czyszczę dane i restartuję... / Clearing data and restarting...");
+    for (int i = 0; i < 3; i++) {
+      digitalWrite(LED_PIN, LOW);  delay(100);
+      digitalWrite(LED_PIN, HIGH); delay(100);
+    }
+    Zigbee.factoryReset();
+    esp_restart();
+  }
 }
 
 // =============================================================================
@@ -661,7 +676,6 @@ void setup() {
 //  Main loop
 // =============================================================================
 void loop() {
-  checkFactoryReset();
   updateLed();
 
   // Po połączeniu — jednorazowo uruchom pomiar
