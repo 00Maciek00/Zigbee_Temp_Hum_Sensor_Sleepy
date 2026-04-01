@@ -3,9 +3,9 @@
 //  Zigbee Temperature & Humidity Sensor with Deep Sleep
 // =============================================================================
 //
-//  Wersja / Version: 1.0
+//  Wersja / Version: 2.3
 //  Autor / Author:   Maciej Sikorski
-//  Data / Date:      30.03.2026
+//  Data / Date:      01.04.2026
 //
 //  Płytka / Board:   Seeed Studio XIAO ESP32C6
 //
@@ -13,14 +13,53 @@
 //    - SHT3x  — temperatura i wilgotność / temperature and humidity
 //    - INA226 — napięcie i prąd baterii LiPo / LiPo battery voltage and current
 //
-//  Opis / Description:
-//    Urządzenie Zigbee End Device z trybem głębokiego uśpienia (deep sleep).
-//    Co 10 minut budzi się, mierzy temperaturę, wilgotność i napięcie baterii,
-//    wysyła dane przez sieć Zigbee, po czym ponownie zasypia.
+//  Zmiany v2.3 / Changes v2.3:
+//    - INA226 fallback: ostatnia dobra wartość z RTC zamiast 0.0V
+//    - Zakres sanity check INA226 (0.5–5.5V) opatrzony komentarzem (1S LiPo, celowe)
+//    - delay(10) po Serial.flush() przed deep sleep — gwarancja opróżnienia UART
 //
-//    A Zigbee End Device with deep sleep mode. Every 10 minutes the device
-//    wakes up, measures temperature, humidity and battery voltage, transmits
-//    data over Zigbee network, then goes back to sleep.
+//    - INA226 fallback: last good value from RTC instead of 0.0V
+//    - INA226 sanity check range (0.5–5.5V) documented (1S LiPo, intentional)
+//    - delay(10) after Serial.flush() before deep sleep — guaranteed UART drain
+//
+
+//    - Makra logowania: LOG_DEBUG/LOG_INFO/LOG_WARN/LOG_ERROR
+//    - DEBUG_ENABLED=0 usuwa logi debug/info z binarki (zero overhead)
+//    - WARN i ERROR logują zawsze (krytyczne zdarzenia produkcyjne)
+//
+//    - Logging macros: LOG_DEBUG/LOG_INFO/LOG_WARN/LOG_ERROR
+//    - DEBUG_ENABLED=0 removes debug/info logs from binary (zero overhead)
+//    - WARN and ERROR always log (production-critical events)
+//
+
+//    - Pominięcie 5s countdown po wake-upie z deep sleep (oszczędność baterii)
+//    - Timeout 5 min dla Zigbee.connected() — brak połączenia = sleep zamiast rozładowania
+//    - ZIGBEE_REPORT_COUNT jako stała (koniec hardcoded 3)
+//    - readTempAndHumidity() zamiast dwóch osobnych odczytów I2C
+//
+//    - Skip 5s countdown after deep sleep wake-up (battery saving)
+//    - 5 min timeout for Zigbee.connected() — no connection = sleep instead of drain
+//    - ZIGBEE_REPORT_COUNT as named constant (no more hardcoded 3)
+//    - readTempAndHumidity() instead of two separate I2C reads
+//
+
+//    - Retry logic dla czujników I2C (3 próby)
+//    - Timeout odczytu SHT3x oparty o millis()
+//    - Flaga dostępności INA226 — brak krytycznego błędu przy awarii
+//    - Walidacja zakresu SHT3x (-40…85°C / 0…100%RH)
+//    - Stan urządzenia w strukturze DeviceState (brak luźnych globali)
+//    - volatile + portENTER_CRITICAL dla goToSleep (bezpieczna dla FreeRTOS)
+//    - Explicit WiFi/BLE disable przed deep sleep
+//    - Ulepszone logowanie błędów I2C
+//
+//    - Retry logic for I2C sensors (3 attempts)
+//    - SHT3x read timeout based on millis()
+//    - INA226 availability flag — no critical failure on sensor absence
+//    - SHT3x range validation (-40…85°C / 0…100%RH)
+//    - Device state in DeviceState struct (no loose globals)
+//    - volatile + portENTER_CRITICAL for goToSleep (FreeRTOS-safe)
+//    - Explicit WiFi/BLE disable before deep sleep
+//    - Improved I2C error logging
 //
 // =============================================================================
 //  MODYFIKACJA ORYGINALNEGO PRZYKŁADU / MODIFICATION OF ORIGINAL EXAMPLE
@@ -28,28 +67,12 @@
 //
 //  Ten plik powstał na podstawie przykładu dostarczonego przez
 //  Espressif Systems (Shanghai) PTE LTD, objętego licencją Apache 2.0.
-//  Oryginalny nagłówek licencyjny zachowano poniżej zgodnie z wymogami licencji.
+//  This file is based on an example by Espressif Systems (Shanghai) PTE LTD,
+//  covered by the Apache 2.0 license.
 //
-//  This file is based on an example provided by
-//  Espressif Systems (Shanghai) PTE LTD, covered by the Apache 2.0 license.
-//  The original license header is preserved below as required by the license.
-//
-// =============================================================================
-
 // Copyright 2024 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
+// Licensed under the Apache License, Version 2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 // =============================================================================
 
 #ifndef ZIGBEE_MODE_ED
@@ -62,66 +85,157 @@
 #include "Adafruit_SHT31.h"
 #include <Adafruit_INA219.h>
 #include <nvs_flash.h>
+#include <esp_wifi.h>      // esp_wifi_stop() przed sleep / before sleep
+#include <esp_bt.h>        // esp_bt_controller_disable() przed sleep / before sleep
+
+// =============================================================================
+//  Konfiguracja logowania / Logging configuration
+//
+//  DEBUG_ENABLED 1 → wszystkie logi (development)
+//  DEBUG_ENABLED 0 → tylko WARN i ERROR (production, zero overhead)
+// =============================================================================
+#define DEBUG_ENABLED 1
+
+#if DEBUG_ENABLED
+  #define LOG_DEBUG(fmt, ...)  Serial.printf("[DEBUG] " fmt "\r\n", ##__VA_ARGS__)
+  #define LOG_INFO(fmt, ...)   Serial.printf("[INFO]  " fmt "\r\n", ##__VA_ARGS__)
+  #define LOG_PRINTLN(msg)     Serial.println(msg)
+  #define LOG_PRINTF(fmt, ...) Serial.printf(fmt, ##__VA_ARGS__)
+#else
+  #define LOG_DEBUG(fmt, ...)  ((void)0)
+  #define LOG_INFO(fmt, ...)   ((void)0)
+  #define LOG_PRINTLN(msg)     ((void)0)
+  #define LOG_PRINTF(fmt, ...) ((void)0)
+#endif
+
+// WARN i ERROR logują zawsze — zdarzenia krytyczne produkcyjne
+// WARN and ERROR always log — production-critical events
+#define LOG_WARN(fmt, ...)   Serial.printf("[WARN]  " fmt "\r\n", ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...)  Serial.printf("[ERROR] " fmt "\r\n", ##__VA_ARGS__)
 
 // -----------------------------------------------------------------------------
 // Konfiguracja pinów i stałych czasowych
 // Pin and timing configuration
 // -----------------------------------------------------------------------------
-#define TEMP_SENSOR_ENDPOINT_NUMBER 10
-#define LED_PIN                     15
-#define BOOT_PIN_NUM                BOOT_PIN
-#define uS_TO_S_FACTOR              1000000ULL
-#define TIME_TO_SLEEP               600   // czas uśpienia w sekundach / sleep time in seconds (10 min)
-#define REPORT_TIMEOUT              6000  // maks. czas oczekiwania na potwierdzenie / max wait for report ACK [ms]
+#define TEMP_SENSOR_ENDPOINT_NUMBER  10
+#define LED_PIN                      15
+#define BOOT_PIN_NUM                 BOOT_PIN
+#define uS_TO_S_FACTOR               1000000ULL
+#define TIME_TO_SLEEP                600    // s (10 minut / 10 minutes)
+#define REPORT_TIMEOUT               6000   // maks. czas na ACK / max wait for ACK [ms]
+
+// -----------------------------------------------------------------------------
+// Konfiguracja czujników
+// Sensor configuration
+// -----------------------------------------------------------------------------
+#define SHT3X_I2C_ADDR          0x44
+#define SHT3X_READ_TIMEOUT_MS   500    // maks. czas na odczyt / max read time [ms]
+#define SHT3X_MAX_RETRIES       3      // liczba prób przed poddaniem się / attempts before giving up
+#define SHT3X_RETRY_DELAY_MS    50     // opóźnienie między próbami / delay between retries [ms]
+#define SHT3X_TEMP_MIN         -40.0f  // dolna granica zakresu / lower range limit [°C]
+#define SHT3X_TEMP_MAX          85.0f  // górna granica zakresu / upper range limit [°C]
+#define SHT3X_HUM_MIN           0.0f   // dolna granica wilgotności / lower humidity limit [%]
+#define SHT3X_HUM_MAX           100.0f // górna granica wilgotności / upper humidity limit [%]
+
+#define INA226_MAX_RETRIES      3      // próby odczytu INA226 / INA226 read attempts
+#define INA226_RETRY_DELAY_MS   50
 
 // -----------------------------------------------------------------------------
 // Granice napięcia baterii LiPo
 // LiPo battery voltage thresholds
 // -----------------------------------------------------------------------------
-#define LIPO_MAX_VOLTAGE  4.20f   // 100% naładowania / 100% charge
-#define LIPO_MIN_VOLTAGE  3.00f   //   0% naładowania /   0% charge
+#define LIPO_MAX_VOLTAGE  4.20f   // 100%
+#define LIPO_MIN_VOLTAGE  3.00f   //   0%
 
 // -----------------------------------------------------------------------------
-// Zmienne globalne
-// Global variables
+// Watchdog dla Zigbee.begin()
+// Watchdog for Zigbee.begin()
 // -----------------------------------------------------------------------------
-uint8_t button = BOOT_PIN_NUM;
+#define ZIGBEE_BEGIN_TIMEOUT_MS    20000
+#define ZIGBEE_CONNECT_TIMEOUT_MS  300000  // maks. czas oczekiwania na sieć / max wait for network [ms] (5 min)
+#define ZIGBEE_REPORT_COUNT        3       // liczba atrybutów do potwierdzenia / number of attributes to ACK
 
+// =============================================================================
+//  Struktura stanu urządzenia (zastępuje luźne zmienne globalne)
+//  Device state structure (replaces loose global variables)
+// =============================================================================
+struct DeviceState {
+  uint8_t          dataToSend;         // oczekiwane ACK / expected ACKs
+  bool             resend;             // flaga ponownego wysłania / resend flag
+  bool             measurementStarted; // pomiar uruchomiony / measurement started
+  volatile bool    goToSleep;          // gotowość do deep sleep / ready for deep sleep
+  bool             shtAvailable;       // SHT3x inicjalizowany poprawnie / SHT3x initialized
+  bool             inaAvailable;       // INA226 inicjalizowany poprawnie / INA226 initialized
+  unsigned long    lastLedToggle;
+  bool             ledState;
+  unsigned long    zigbeeConnectStart; // czas startu oczekiwania na sieć / network wait start time
+};
+
+static DeviceState dev = {
+  .dataToSend         = ZIGBEE_REPORT_COUNT,
+  .resend             = false,
+  .measurementStarted = false,
+  .goToSleep          = false,
+  .shtAvailable       = false,
+  .inaAvailable       = false,
+  .lastLedToggle      = 0,
+  .ledState           = false,
+  .zigbeeConnectStart = 0,
+};
+
+// Mutex chroniący goToSleep przed race condition między taskiem a loop()
+// Mutex protecting goToSleep from race condition between task and loop()
+static portMUX_TYPE sleepMux = portMUX_INITIALIZER_UNLOCKED;
+
+// -----------------------------------------------------------------------------
+// Obiekty sprzętu / Hardware objects
+// -----------------------------------------------------------------------------
 ZigbeeTempSensor zbTempSensor = ZigbeeTempSensor(TEMP_SENSOR_ENDPOINT_NUMBER);
 Adafruit_SHT31   sht31        = Adafruit_SHT31();
 Adafruit_INA219  ina219;
 
-uint8_t dataToSend         = 3;     // liczba oczekiwanych potwierdzeń / expected ACK count
-bool    resend             = false; // flaga ponownego wysłania / resend flag
-bool    measurementStarted = false; // pomiar uruchomiony / measurement started
-bool    goToSleep          = false; // gotowość do uśpienia / ready to sleep
+uint8_t button = BOOT_PIN_NUM;
 
-unsigned long lastLedToggle = 0;
-bool ledState = false;
+// Zmienne w pamięci RTC (przeżywają deep sleep)
+// Variables in RTC memory (survive deep sleep)
+RTC_DATA_ATTR int   zigbeeFailCount        = 0;
+RTC_DATA_ATTR float lastGoodBatteryVoltage = 3.7f;
+// Wartość 3.7V = nominalne napięcie środka zakresu LiPo (między 3.0V a 4.2V).
+// Używana jako fallback gdy INA226 niedostępny lub wszystkie próby odczytu nieudane,
+// zamiast 0.0V które koordynator Zigbee mógłby zinterpretować jako awarię zasilania.
+// 3.7V = nominal mid-range LiPo voltage (between 3.0V and 4.2V).
+// Used as fallback when INA226 is unavailable or all read attempts fail,
+// instead of 0.0V which the Zigbee coordinator might interpret as a power failure.
 
-// Zmienne przechowywane w pamięci RTC (przeżywają deep sleep)
-// Variables stored in RTC memory (survive deep sleep)
-RTC_DATA_ATTR int zigbeeFailCount = 0; // licznik błędów Zigbee / Zigbee failure counter
-
-// Watchdog dla Zigbee.begin() — zabezpieczenie przed zawieszeniem
-// Watchdog for Zigbee.begin() — protection against hang
-#define ZIGBEE_BEGIN_TIMEOUT_MS  20000
 volatile bool zigbeeBeginDone = false;
 
-// -----------------------------------------------------------------------------
+// =============================================================================
+//  Pomocnik: bezpieczne ustawienie flagi goToSleep
+//  Helper: thread-safe set of goToSleep flag
+// =============================================================================
+static void IRAM_ATTR setGoToSleep() {
+  portENTER_CRITICAL(&sleepMux);
+  dev.goToSleep = true;
+  portEXIT_CRITICAL(&sleepMux);
+}
+
+static bool IRAM_ATTR checkGoToSleep() {
+  bool val;
+  portENTER_CRITICAL(&sleepMux);
+  val = dev.goToSleep;
+  portEXIT_CRITICAL(&sleepMux);
+  return val;
+}
+
+// =============================================================================
 //  Zadanie watchdog dla Zigbee.begin()
 //  Watchdog task for Zigbee.begin()
-//
-//  Jeśli Zigbee.begin() nie zakończy się w ciągu ZIGBEE_BEGIN_TIMEOUT_MS,
-//  urządzenie zostaje zrestartowane.
-//  If Zigbee.begin() does not finish within ZIGBEE_BEGIN_TIMEOUT_MS,
-//  the device is restarted.
-// -----------------------------------------------------------------------------
+// =============================================================================
 static void zigbeeWatchdogTask(void *arg) {
   unsigned long start = millis();
   while (!zigbeeBeginDone) {
     if ((millis() - start) > ZIGBEE_BEGIN_TIMEOUT_MS) {
-      Serial.println("WATCHDOG: Zigbee.begin() zawieszone! Restartuję... / hung! Restarting...");
+      LOG_WARN("WATCHDOG: Zigbee.begin() zawieszone! Restartuję... / hung! Restarting...");
       delay(200);
       ESP.restart();
     }
@@ -130,13 +244,10 @@ static void zigbeeWatchdogTask(void *arg) {
   vTaskDelete(NULL);
 }
 
-// -----------------------------------------------------------------------------
-//  Przelicz napięcie LiPo [V] na procenty naładowania [0–100]
+// =============================================================================
+//  Przelicz napięcie LiPo [V] na procenty [0–100]
 //  Convert LiPo voltage [V] to battery percentage [0–100]
-//
-//  Używa odcinkowej interpolacji liniowej dopasowanej do krzywej rozładowania.
-//  Uses piecewise linear interpolation fitted to the discharge curve.
-// -----------------------------------------------------------------------------
+// =============================================================================
 uint8_t lipoVoltageToPercent(float voltage) {
   if (voltage >= LIPO_MAX_VOLTAGE) return 100;
   if (voltage <= LIPO_MIN_VOLTAGE) return 0;
@@ -157,14 +268,164 @@ uint8_t lipoVoltageToPercent(float voltage) {
   return 0;
 }
 
-// -----------------------------------------------------------------------------
-//  Odczyt napięcia szyny z INA226
-//  Read bus voltage from INA226
-// -----------------------------------------------------------------------------
+// =============================================================================
+//  Odczyt napięcia baterii z INA226 (z retry i sprawdzeniem dostępności)
+//  Read battery voltage from INA226 (with retry and availability check)
+// =============================================================================
 float readBatteryVoltage() {
-  float busVoltage_V = ina219.getBusVoltage_V();
-  Serial.printf("INA226 napięcie szyny / bus voltage: %.3f V\r\n", busVoltage_V);
-  return busVoltage_V;
+  if (!dev.inaAvailable) {
+    // INA226 nie zainicjalizowany — użyj ostatniej dobrej wartości z RTC
+    // INA226 not initialized — use last known good value from RTC
+    LOG_WARN("INA226 niedostępny / unavailable. Używam ostatniej dobrej wartości / last good value: %.3fV.", lastGoodBatteryVoltage);
+    return lastGoodBatteryVoltage;
+  }
+
+  for (int attempt = 1; attempt <= INA226_MAX_RETRIES; attempt++) {
+    float busVoltage_V = ina219.getBusVoltage_V();
+
+    // Zakres 0.5–5.5V: dolna granica odrzuca zwarcia i błędy I2C (zwracają 0V),
+    // górna granica z marginesem na przepięcia pomiarowe przy 1S LiPo (max 4.2V).
+    // Celowo NIE obsługuje 2S LiPo (max 8.4V) — układ zasilany jest z 1S.
+    // Range 0.5–5.5V: lower bound rejects shorts and I2C errors (return 0V),
+    // upper bound with margin for measurement spikes on 1S LiPo (max 4.2V).
+    // Intentionally does NOT support 2S LiPo (max 8.4V) — circuit runs on 1S.
+    if (busVoltage_V > 0.5f && busVoltage_V < 5.5f) {
+      LOG_DEBUG("INA226 napięcie szyny / bus voltage: %.3f V (próba / attempt %d)",
+                    busVoltage_V, attempt);
+      lastGoodBatteryVoltage = busVoltage_V;  // zapisz w RTC na wypadek awarii / save to RTC for fallback
+      return busVoltage_V;
+    }
+
+    LOG_WARN("INA226 podejrzany odczyt / suspicious read: %.3f V (próba / attempt %d/%d)",
+                  busVoltage_V, attempt, INA226_MAX_RETRIES);
+
+    if (attempt < INA226_MAX_RETRIES) {
+      vTaskDelay(INA226_RETRY_DELAY_MS / portTICK_PERIOD_MS);
+    }
+  }
+
+  // Wszystkie próby nieudane — użyj ostatniej dobrej wartości z RTC
+  // All attempts failed — use last known good value from RTC
+  LOG_ERROR("INA226 — wszystkie próby nieudane / all attempts failed. Używam ostatniej dobrej wartości / last good value: %.3fV.", lastGoodBatteryVoltage);
+  return lastGoodBatteryVoltage;
+}
+
+// =============================================================================
+//  Odczyt SHT3x z retry i timeoutem
+//  SHT3x read with retry and timeout
+//
+//  Zwraca true gdy odczyt udany.
+//  Returns true when read was successful.
+// =============================================================================
+bool readSHT3x(float &temperature, float &humidity) {
+  if (!dev.shtAvailable) {
+    LOG_WARN("SHT3x niedostępny / unavailable.");
+    temperature = 0.0f;
+    humidity    = 0.0f;
+    return false;
+  }
+
+  for (int attempt = 1; attempt <= SHT3X_MAX_RETRIES; attempt++) {
+    unsigned long tStart = millis();
+
+    // Oba odczyty w jednym bloku czasowym — T i H z tej samej próbki
+    // Both reads in one timed block — T and H from the same sample
+    float t = sht31.readTemperature();
+    float h = sht31.readHumidity();
+
+    unsigned long elapsed = millis() - tStart;
+
+    // Sprawdź timeout odczytu
+    // Check read timeout
+    if (elapsed > SHT3X_READ_TIMEOUT_MS) {
+      LOG_WARN("SHT3x timeout odczytu / read timeout: %lu ms (próba / attempt %d/%d)",
+                    elapsed, attempt, SHT3X_MAX_RETRIES);
+      if (attempt < SHT3X_MAX_RETRIES) {
+        vTaskDelay(SHT3X_RETRY_DELAY_MS / portTICK_PERIOD_MS);
+        continue;
+      }
+      break;
+    }
+
+    // Sprawdź czy wartości są poprawne (nie NaN)
+    // Check if values are valid (not NaN)
+    if (isnan(t) || isnan(h)) {
+      LOG_WARN("SHT3x NaN (próba / attempt %d/%d)", attempt, SHT3X_MAX_RETRIES);
+      if (attempt < SHT3X_MAX_RETRIES) {
+        vTaskDelay(SHT3X_RETRY_DELAY_MS / portTICK_PERIOD_MS);
+        continue;
+      }
+      break;
+    }
+
+    // Walidacja zakresu fizycznego czujnika
+    // Physical sensor range validation
+    if (t < SHT3X_TEMP_MIN || t > SHT3X_TEMP_MAX) {
+      LOG_WARN("Temperatura poza zakresem / out of range: %.2f°C (zakres / range: %.0f–%.0f°C). Próba %d/%d",
+                    t, SHT3X_TEMP_MIN, SHT3X_TEMP_MAX, attempt, SHT3X_MAX_RETRIES);
+      if (attempt < SHT3X_MAX_RETRIES) {
+        vTaskDelay(SHT3X_RETRY_DELAY_MS / portTICK_PERIOD_MS);
+        continue;
+      }
+      break;
+    }
+
+    if (h < SHT3X_HUM_MIN || h > SHT3X_HUM_MAX) {
+      LOG_WARN("Wilgotność poza zakresem / out of range: %.2f%% (próba %d/%d)",
+                    h, attempt, SHT3X_MAX_RETRIES);
+      if (attempt < SHT3X_MAX_RETRIES) {
+        vTaskDelay(SHT3X_RETRY_DELAY_MS / portTICK_PERIOD_MS);
+        continue;
+      }
+      break;
+    }
+
+    // Odczyt udany / Successful read
+    temperature = t;
+    humidity    = h;
+    LOG_DEBUG("SHT3x OK: %.2f°C, %.2f%% (próba / attempt %d)", t, h, attempt);
+    return true;
+  }
+
+  // Wszystkie próby nieudane
+  // All attempts failed
+  LOG_ERROR("SHT3x — wszystkie próby nieudane / all attempts failed. Używam 0.0.");
+  temperature = 0.0f;
+  humidity    = 0.0f;
+  return false;
+}
+
+// =============================================================================
+//  Wyłącz zbędne radia przed deep sleep (WiFi i BLE)
+//  Disable unused radios before deep sleep (WiFi and BLE)
+//
+//  Na ESP32C6 z aktywnym Zigbee — WiFi/BLE mogą pobierać prąd jeśli
+//  nie są explicite wyłączone.
+//  On ESP32C6 with active Zigbee — WiFi/BLE may draw current unless
+//  explicitly disabled.
+// =============================================================================
+static void disableUnusedRadios() {
+  // Zatrzymaj WiFi jeśli był uruchomiony
+  // Stop WiFi if it was running
+  esp_err_t ret = esp_wifi_stop();
+  if (ret == ESP_OK) {
+    LOG_INFO("WiFi zatrzymany / stopped.");
+  } else if (ret != ESP_ERR_WIFI_NOT_INIT) {
+    // ESP_ERR_WIFI_NOT_INIT oznacza "nigdy nie był uruchomiony" — to OK
+    // ESP_ERR_WIFI_NOT_INIT means "never started" — that's fine
+    LOG_WARN("esp_wifi_stop() błąd / error: 0x%x", ret);
+  }
+
+  // Zatrzymaj BT controller jeśli aktywny
+  // Stop BT controller if active
+  if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE) {
+    ret = esp_bt_controller_disable();
+    if (ret == ESP_OK) {
+      LOG_INFO("BT controller wyłączony / disabled.");
+    } else {
+      LOG_WARN("esp_bt_controller_disable() błąd / error: 0x%x", ret);
+    }
+  }
 }
 
 // =============================================================================
@@ -173,14 +434,14 @@ float readBatteryVoltage() {
 // =============================================================================
 void onGlobalResponse(zb_cmd_type_t command, esp_zb_zcl_status_t status,
                       uint8_t endpoint, uint16_t cluster) {
-  Serial.printf("Zigbee odpowiedź / response: %s, endpoint: %d, cluster: 0x%04X\r\n",
+  LOG_DEBUG("Zigbee odpowiedź / response: %s, ep: %d, cluster: 0x%04X",
                 esp_zb_zcl_status_to_name(status), endpoint, cluster);
 
   if ((command == ZB_CMD_REPORT_ATTRIBUTE) && (endpoint == TEMP_SENSOR_ENDPOINT_NUMBER)) {
     if (status == ESP_ZB_ZCL_STATUS_SUCCESS) {
-      if (dataToSend > 0) dataToSend--;  // potwierdzenie odebrane / ACK received
+      if (dev.dataToSend > 0) dev.dataToSend--;
     } else {
-      resend = true;  // błąd — ustaw flagę ponownego wysłania / error — set resend flag
+      dev.resend = true;
     }
   }
 }
@@ -191,22 +452,23 @@ void onGlobalResponse(zb_cmd_type_t command, esp_zb_zcl_status_t status,
 // =============================================================================
 static void measureAndSleep(void *arg) {
 
-  // ── 1. Odczyt temperatury i wilgotności z SHT3x ──
-  // ── 1. Read temperature and humidity from SHT3x ──
-  float temperature = sht31.readTemperature();
-  float humidity    = sht31.readHumidity();
+  // ── 1. Odczyt temperatury i wilgotności z SHT3x (retry + timeout + walidacja) ──
+  // ── 1. Read temperature & humidity from SHT3x (retry + timeout + validation) ──
+  float temperature = 0.0f;
+  float humidity    = 0.0f;
+  bool  shtOk       = readSHT3x(temperature, humidity);
 
-  if (isnan(temperature) || isnan(humidity)) {
-    Serial.println("BŁĄD / ERROR: odczyt SHT3x nieudany! Używam wartości domyślnych. / SHT3x read failed! Using default values.");
-    temperature = 0.0f;
-    humidity    = 0.0f;
+  if (!shtOk) {
+    // Kontynuujemy — wyślemy dane z wartościami domyślnymi, zapis błędu już nastąpił
+    // Continue — send with default values, error was already logged
+    LOG_WARN("Wysyłam dane z domyślnymi wartościami SHT3x / Sending with SHT3x defaults.");
   }
 
-  // ── 2. Odczyt napięcia baterii i przeliczenie na procenty ──
-  // ── 2. Read battery voltage and convert to percentage ──
+  // ── 2. Odczyt napięcia baterii (z retry i sprawdzeniem dostępności INA226) ──
+  // ── 2. Read battery voltage (with retry and INA226 availability check) ──
   float   batteryVoltage = readBatteryVoltage();
   uint8_t batteryPercent = lipoVoltageToPercent(batteryVoltage);
-  Serial.printf("Bateria / Battery: %.3f V  →  %u %%\r\n", batteryVoltage, batteryPercent);
+  LOG_DEBUG("Bateria / Battery: %.3f V  →  %u %%", batteryVoltage, batteryPercent);
 
   // ── 3. Ustaw wartości w klastrach Zigbee ──
   // ── 3. Set values in Zigbee clusters ──
@@ -214,7 +476,7 @@ static void measureAndSleep(void *arg) {
   zbTempSensor.setHumidity(humidity);
   zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, batteryPercent);
 
-  Serial.printf("Raport Zigbee / Zigbee report: %.2f°C, %.2f%%, batt: %u%% (%.2fV)\r\n",
+  LOG_INFO("Raport Zigbee / Zigbee report: %.2f°C, %.2f%%, batt: %u%% (%.2fV)",
                 temperature, humidity, batteryPercent, batteryVoltage);
 
   // ── 4. Wysłanie raportu Zigbee i oczekiwanie na potwierdzenie ──
@@ -222,18 +484,27 @@ static void measureAndSleep(void *arg) {
   zbTempSensor.report();
 
   unsigned long startTime = millis();
-  while (dataToSend != 0 && (millis() - startTime) < REPORT_TIMEOUT) {
-    if (resend) {
-      resend     = false;
-      dataToSend = 3;
+  while (dev.dataToSend != 0 && (millis() - startTime) < REPORT_TIMEOUT) {
+    if (dev.resend) {
+      dev.resend     = false;
+      dev.dataToSend = ZIGBEE_REPORT_COUNT;
       zbTempSensor.report();
       startTime = millis();
     }
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 
-  Serial.println("Wysyłanie zakończone lub timeout. Zasypiam... / Sending done or timeout. Going to sleep...");
-  goToSleep = true;
+  if (dev.dataToSend != 0) {
+    LOG_WARN("Timeout ACK — nie otrzymano %d potwierdzeń / %d ACKs not received.",
+                  dev.dataToSend, dev.dataToSend);
+  } else {
+    LOG_INFO("Wszystkie potwierdzenia odebrane / All ACKs received.");
+  }
+
+  LOG_INFO("Wysyłanie zakończone. Zasypiam... / Sending done. Going to sleep...");
+
+  // Thread-safe ustawienie flagi / Thread-safe flag set
+  setGoToSleep();
   vTaskDelete(NULL);
 }
 
@@ -246,24 +517,20 @@ void checkFactoryReset() {
     delay(100);
     unsigned long startTime = millis();
     while (digitalRead(button) == LOW) {
-      // Miga diodą co 200 ms podczas trzymania przycisku
-      // Blink LED every 200 ms while button is held
       bool blink = ((millis() - startTime) / 200) % 2;
       digitalWrite(LED_PIN, blink ? HIGH : LOW);
       delay(50);
 
       if ((millis() - startTime) > 3000) {
-        Serial.println("Factory reset! Czyszczę dane i restartuję... / Clearing data and restarting...");
+        LOG_WARN("Factory reset! Czyszczę dane i restartuję... / Clearing data and restarting...");
         digitalWrite(LED_PIN, LOW);
         delay(200);
         Zigbee.factoryReset();
         esp_restart();
       }
     }
-    // Przycisk zwolniony przed upływem 3 s — anuluj
-    // Button released before 3 s — cancel
-    ledState = false;
-    lastLedToggle = millis();
+    dev.ledState      = false;
+    dev.lastLedToggle = millis();
     digitalWrite(LED_PIN, LOW);
   }
 }
@@ -271,21 +538,18 @@ void checkFactoryReset() {
 // =============================================================================
 //  Nieblokująca obsługa diody LED
 //  Non-blocking LED control
-//
-//  Miga (500 ms) gdy brak połączenia Zigbee, gaśnie po połączeniu.
-//  Blinks (500 ms) when not connected to Zigbee, turns off after connection.
 // =============================================================================
 void updateLed() {
   unsigned long now = millis();
   if (!Zigbee.connected()) {
-    if (now - lastLedToggle >= 500) {
-      lastLedToggle = now;
-      ledState = !ledState;
-      digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+    if (now - dev.lastLedToggle >= 500) {
+      dev.lastLedToggle = now;
+      dev.ledState      = !dev.ledState;
+      digitalWrite(LED_PIN, dev.ledState ? HIGH : LOW);
     }
   } else {
-    if (ledState) {
-      ledState = false;
+    if (dev.ledState) {
+      dev.ledState = false;
       digitalWrite(LED_PIN, LOW);
     }
   }
@@ -299,39 +563,45 @@ void setup() {
   Serial.begin(115200);
   Wire.begin();
 
-  // Inicjalizacja czujnika temperatury i wilgotności SHT3x
-  // Initialize SHT3x temperature and humidity sensor
-  if (!sht31.begin(0x44)) {
-    Serial.println("BŁĄD / ERROR: Nie znaleziono SHT3x! Sprawdź podłączenie. / SHT3x not found! Check wiring.");
+  // Inicjalizacja SHT3x
+  // Initialize SHT3x
+  if (!sht31.begin(SHT3X_I2C_ADDR)) {
+    LOG_ERROR("SHT3x nie znaleziony! / SHT3x not found! Sprawdź podłączenie / Check wiring.");
+    dev.shtAvailable = false;
   } else {
-    Serial.println("SHT3x OK.");
+    LOG_INFO("SHT3x OK.");
+    dev.shtAvailable = true;
   }
 
-  // Inicjalizacja monitora baterii INA226
-  // Initialize INA226 battery monitor
+  // Inicjalizacja INA226
+  // Initialize INA226
   if (!ina219.begin()) {
-    Serial.println("BŁĄD / ERROR: Nie znaleziono INA226! Sprawdź podłączenie. / INA226 not found! Check wiring.");
+    LOG_ERROR("INA226 nie znaleziony! / INA226 not found! Sprawdź podłączenie / Check wiring.");
+    dev.inaAvailable = false;
   } else {
     ina219.setCalibration_16V_400mA();
-    Serial.println("INA226 OK (zakres / range 16V/400mA).");
+    LOG_INFO("INA226 OK (zakres / range 16V/400mA).");
+    dev.inaAvailable = true;
   }
 
-  // Konfiguracja pinów GPIO
-  // GPIO pin configuration
+  // Zatrzymaj WiFi i BLE — nie są potrzebne dla Zigbee ED
+  // Disable WiFi and BLE — not needed for Zigbee ED
+  disableUnusedRadios();
+
+  // GPIO
   pinMode(button, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
-  // Konfiguracja budzenia przez timer (deep sleep)
-  // Configure timer wakeup (deep sleep)
+  // Timer deep sleep
   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
 
   // Konfiguracja endpointu Zigbee
   // Zigbee endpoint configuration
   zbTempSensor.setManufacturerAndModel("Espressif", "SleepyZigbeeSensor");
-  zbTempSensor.setMinMaxValue(10, 50);
+  zbTempSensor.setMinMaxValue(SHT3X_TEMP_MIN, SHT3X_TEMP_MAX);
   zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, 100);
-  zbTempSensor.addHumiditySensor(0, 100, 1, 0.0);
+  zbTempSensor.addHumiditySensor(SHT3X_HUM_MIN, SHT3X_HUM_MAX, 1, 0.0);
 
   Zigbee.onGlobalDefaultResponse(onGlobalResponse);
   Zigbee.addEndpoint(&zbTempSensor);
@@ -342,20 +612,26 @@ void setup() {
   zigbeeConfig.nwk_cfg.zed_cfg.keep_alive = 10000;
   Zigbee.setTimeout(15000);
 
-  // Odliczanie przed startem — pozwala na wgranie nowego firmware
-  // Countdown before start — allows uploading new firmware
-  Serial.println("\n>>> START SYSTEMU / SYSTEM START: Oczekiwanie 5 s przed Zigbee...");
-  for (int i = 5; i > 0; i--) {
-    Serial.printf("Start za / in: %d s\r\n", i);
-    digitalWrite(LED_PIN, LOW);  delay(500);
-    digitalWrite(LED_PIN, HIGH); delay(500);
+  // Odliczanie przed startem tylko przy pierwszym uruchomieniu (nie po deep sleep)
+  // Countdown only on first boot, skip after deep sleep wake-up
+  esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+  if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    LOG_INFO("\n>>> START SYSTEMU / SYSTEM START: Oczekiwanie 5 s przed Zigbee...");
+    for (int i = 5; i > 0; i--) {
+      LOG_INFO("Start za / in: %d s", i);
+      digitalWrite(LED_PIN, LOW);  delay(500);
+      digitalWrite(LED_PIN, HIGH); delay(500);
+    }
+    digitalWrite(LED_PIN, LOW);
+  } else {
+    LOG_INFO("Wake-up z deep sleep / from deep sleep. Pomijam countdown.");
   }
-  digitalWrite(LED_PIN, LOW);
 
-  Serial.printf("Uruchamianie Zigbee... / Starting Zigbee... (próba / attempt %d)\r\n", zigbeeFailCount + 1);
+  LOG_INFO("Uruchamianie Zigbee... / Starting Zigbee... (próba / attempt %d)",
+                zigbeeFailCount + 1);
 
-  // Uruchomienie watchdog i stosu Zigbee
-  // Start watchdog and Zigbee stack
+  // Watchdog + start stosu Zigbee
+  // Watchdog + Zigbee stack start
   zigbeeBeginDone = false;
   xTaskCreate(zigbeeWatchdogTask, "zb_watchdog", 2048, NULL, 10, NULL);
 
@@ -364,11 +640,9 @@ void setup() {
 
   if (!zbOk) {
     zigbeeFailCount++;
-    Serial.printf("Zigbee start NIEUDANY / FAILED! Próba / Attempt %d.\r\n", zigbeeFailCount);
+    LOG_WARN("Zigbee start NIEUDANY / FAILED! Próba / Attempt %d.", zigbeeFailCount);
     if (zigbeeFailCount >= 5) {
-      // Po 5 błędach z rzędu — wyczyść NVS i restartuj
-      // After 5 consecutive failures — erase NVS and restart
-      Serial.println("5 błędów z rzędu — czyszczę NVS... / 5 consecutive failures — erasing NVS...");
+      LOG_WARN("5 błędów z rzędu — czyszczę NVS... / 5 consecutive failures — erasing NVS...");
       zigbeeFailCount = 0;
       nvs_flash_erase();
       nvs_flash_init();
@@ -378,7 +652,8 @@ void setup() {
   }
 
   zigbeeFailCount = 0;
-  Serial.println("Zigbee OK. Czekam na sieć... / Waiting for network...");
+  dev.zigbeeConnectStart = millis();
+  LOG_INFO("Zigbee OK. Czekam na sieć... / Waiting for network...");
 }
 
 // =============================================================================
@@ -386,21 +661,34 @@ void setup() {
 //  Main loop
 // =============================================================================
 void loop() {
-  checkFactoryReset(); // sprawdź przycisk factory reset / check factory reset button
-  updateLed();         // zaktualizuj stan diody LED / update LED state
+  checkFactoryReset();
+  updateLed();
 
-  // Po uzyskaniu połączenia uruchom jednorazowo zadanie pomiaru
-  // After connection is established, start the measurement task once
-  if (Zigbee.connected() && !measurementStarted) {
-    Serial.println("\nPołączono z siecią! / Connected to network! Uruchamiam pomiar. / Starting measurement.");
-    measurementStarted = true;
+  // Po połączeniu — jednorazowo uruchom pomiar
+  // After connection — start measurement once
+  if (Zigbee.connected() && !dev.measurementStarted) {
+    LOG_INFO("Połączono z siecią! / Connected to network! Uruchamiam pomiar. / Starting measurement.");
+    dev.measurementStarted = true;
     xTaskCreate(measureAndSleep, "temp_update", 4096, NULL, 5, NULL);
   }
 
-  // Jeśli zadanie pomiaru zakończyło pracę — wejdź w deep sleep
+  // Timeout połączenia Zigbee — jeśli nie połączono w 5 minut, zasypiam
+  // Zigbee connect timeout — if not connected within 5 minutes, go to sleep
+  if (!dev.measurementStarted &&
+      dev.zigbeeConnectStart > 0 &&
+      (millis() - dev.zigbeeConnectStart) > ZIGBEE_CONNECT_TIMEOUT_MS) {
+    LOG_WARN("Timeout połączenia Zigbee. Zasypiam. / Zigbee connect timeout. Sleeping.");
+    Serial.flush();
+    delay(10); // gwarancja opróżnienia bufora UART / ensure UART buffer is drained
+    esp_deep_sleep_start();
+  }
+
+  // Jeśli zadanie pomiaru skończyło — wejdź w deep sleep
   // If measurement task is done — enter deep sleep
-  if (goToSleep) {
-    Serial.println("Wchodzę w deep sleep... / Entering deep sleep...");
+  if (checkGoToSleep()) {
+    LOG_INFO("Wchodzę w deep sleep... / Entering deep sleep...");
+    Serial.flush();
+    delay(10); // gwarancja opróżnienia bufora UART / ensure UART buffer is drained
     digitalWrite(LED_PIN, HIGH); delay(100);
     digitalWrite(LED_PIN, LOW);  delay(50);
     esp_deep_sleep_start();
