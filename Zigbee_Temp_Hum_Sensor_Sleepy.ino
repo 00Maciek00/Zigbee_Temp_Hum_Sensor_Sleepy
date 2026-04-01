@@ -601,7 +601,7 @@ void setup() {
   zbTempSensor.setManufacturerAndModel("Espressif", "SleepyZigbeeSensor");
   zbTempSensor.setMinMaxValue(SHT3X_TEMP_MIN, SHT3X_TEMP_MAX);
   zbTempSensor.setPowerSource(ZB_POWER_SOURCE_BATTERY, 100);
-  zbTempSensor.addHumiditySensor(SHT3X_HUM_MIN, SHT3X_HUM_MAX, 1, 0.0);
+  zbTempSensor.addHumiditySensor(SHT3X_HUM_MIN, SHT3X_HUM_MAX, 1);
 
   Zigbee.onGlobalDefaultResponse(onGlobalResponse);
   Zigbee.addEndpoint(&zbTempSensor);
