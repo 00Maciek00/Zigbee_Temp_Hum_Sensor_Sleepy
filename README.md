@@ -108,6 +108,15 @@ Modyfikacje: Maciej Sikorski, 2026.
 Szczegóły w pliku [LICENSE](LICENSE).
 
 ---
+
+### Autor
+
+**Wersja:** 1.0  
+**Autor:** Maciej Sikorski  
+**Data:** 01.04.2026  
+**Licencja:** Apache 2.0
+
+---
 ---
 
 ## English
@@ -212,3 +221,10 @@ After waking up via timer or button, the device goes through a shortened boot se
 Based on an example by Espressif Systems (Shanghai) PTE LTD, licensed under Apache 2.0.  
 Modifications by Maciej Sikorski, 2026.  
 See [LICENSE](LICENSE) for details.
+
+### Author
+
+**Version:** 1.0  
+**Author:** Maciej Sikorski  
+**Date:** 01.04.2026  
+**License:** Apache 2.0
